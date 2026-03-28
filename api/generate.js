@@ -1,1 +1,65 @@
-export default async function handler(req){const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type'};if(req.method==='OPTIONS')return new Response(null,{headers});try{const{prompt,count=1}=await req.json();const gemRes=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:`Enhance this image generation prompt to be more detailed and photorealistic. Return ONLY the enhanced prompt, nothing else: ${prompt}`}]}]})});const gemData=await gemRes.json();const enhanced=gemData.candidates?.[0]?.content?.parts?.[0]?.text||prompt;const hfRes=await fetch('https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',{method:'POST',headers:{'Authorization':`Bearer ${process.env.HF_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({inputs:enhanced})});if(!hfRes.ok){let msg=`خطأ ${hfRes.status}`;if(hfRes.status===503)msg='النموذج يحمّل، انتظر 30 ثانية';if(hfRes.status===429)msg='طلبات كثيرة، انتظر';return new Response(JSON.stringify({error:msg}),{status:hfRes.status,headers:{...headers,'Content-Type':'application/json'}});}const buf=await hfRes.arrayBuffer();const b64=btoa(String.fromCharCode(...new Uint8Array(buf)));return new Response(JSON.stringify({images:[b64]}),{status:200,headers:{...headers,'Content-Type':'application/json'}});}catch(err){return new Response(JSON.stringify({error:err.message}),{status:500,headers:{...headers,'Content-Type':'application/json'}});}}export const config={runtime:'edge'};
+// generate.js - CommonJS version
+const fetch = require("node-fetch"); // استعمل require بدل import
+
+// قراءة متغيرات البيئة من Vercel
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const HUGGING_API_KEY = process.env.HUGGING_API_KEY;
+
+// توليد صورة عبر Gemini
+async function generateWithGemini(prompt) {
+  const response = await fetch("https://api.gemini.ai/v1/generate-image", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${GEMINI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      prompt: prompt,
+      width: 512,
+      height: 512,
+      samples: 1
+    })
+  });
+  return response.json();
+}
+
+// توليد صورة عبر HuggingFace
+async function generateWithHugging(prompt) {
+  const response = await fetch("https://api-inference.huggingface.co/models/CompVis/stable-diffusion-v1-4", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${HUGGING_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      inputs: prompt,
+      options: { wait_for_model: true }
+    })
+  });
+  return response.json();
+}
+
+// الدالة الرئيسية API Route في Vercel
+module.exports = async function handler(req, res) {
+  const { prompt, service } = req.body;
+
+  if (!prompt || !service) {
+    return res.status(400).json({ error: "Prompt and service are required" });
+  }
+
+  try {
+    let result;
+    if (service === "gemini") {
+      result = await generateWithGemini(prompt);
+    } else if (service === "hugging") {
+      result = await generateWithHugging(prompt);
+    } else {
+      return res.status(400).json({ error: "Unknown service" });
+    }
+
+    res.status(200).json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to generate image" });
+  }
+};
